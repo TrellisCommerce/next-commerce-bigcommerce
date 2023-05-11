@@ -1,5 +1,5 @@
-import { HIDDEN_PRODUCT_TAG, SHOPIFY_GRAPHQL_API_ENDPOINT } from 'lib/constants';
-import { isShopifyError } from 'lib/type-guards';
+import { HIDDEN_PRODUCT_TAG } from 'lib/constants';
+import { isBigCommerceError } from 'lib/type-guards';
 import {
   addToCartMutation,
   createCartMutation,
@@ -12,8 +12,8 @@ import {
   getCollectionQuery,
   getCollectionsQuery
 } from './queries/collection';
-import { getMenuQuery } from './queries/menu';
-import { getPageQuery, getPagesQuery } from './queries/page';
+import { getSiteInfoQuery } from './queries/menu';
+import { getPageQuery } from './queries/page';
 import {
   getProductQuery,
   getProductRecommendationsQuery,
@@ -33,7 +33,7 @@ import {
   ShopifyCollectionOperation,
   ShopifyCollectionProductsOperation,
   ShopifyCollectionsOperation,
-  ShopifyCreateCartOperation,
+  BigCommerceCreateCartOperation,
   ShopifyMenuOperation,
   ShopifyPageOperation,
   ShopifyPagesOperation,
@@ -42,16 +42,31 @@ import {
   ShopifyProductRecommendationsOperation,
   ShopifyProductsOperation,
   ShopifyRemoveFromCartOperation,
-  ShopifyUpdateCartOperation
+  ShopifyUpdateCartOperation,
+  BCCategory
 } from './types';
+import { Product } from './schema';
 
-const domain = `https://${process.env.SHOPIFY_STORE_DOMAIN!}`;
-const endpoint = `${domain}${SHOPIFY_GRAPHQL_API_ENDPOINT}`;
-const key = process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN!;
+const domain = process.env.BIGCOMMERCE_STOREFRONT_DOMAIN!;
+const graphQLEndpoint = process.env.BIGCOMMERCE_STOREFRONT_GRAPHQL_API_URL;
+const restEndpoint = process.env.BIGCOMMERCE_STOREFRONT_REST_API_URL;
+const key = process.env.BIGCOMMERCE_STOREFRONT_API_TOKEN!;
 
 type ExtractVariables<T> = T extends { variables: object } ? T['variables'] : never;
 
-export async function shopifyFetch<T>({
+enum HTTPMethod {
+  CONNECT = 'CONNECT',
+  DELETE = 'DELETE',
+  GET = 'GET',
+  HEAD = 'HEAD',
+  OPTIONS = 'OPTIONS',
+  PATCH = 'PATCH',
+  POST = 'POST',
+  PUT = 'PUT',
+  TRACE = 'TRACE'
+}
+
+export async function bigCommerceGraphQLFetch<T>({
   query,
   variables,
   headers,
@@ -63,11 +78,12 @@ export async function shopifyFetch<T>({
   cache?: RequestCache;
 }): Promise<{ status: number; body: T } | never> {
   try {
-    const result = await fetch(endpoint, {
+    const result = await fetch(graphQLEndpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Shopify-Storefront-Access-Token': key,
+        Authorization:
+          'Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJjaWQiOjEsImNvcnMiOlsiaHR0cHM6Ly9kZXZlbG9wZXIuYmlnY29tbWVyY2UuY29tIl0sImVhdCI6MTY4MzQ5OTE1NSwiaWF0IjoxNjgzMzI2MzU1LCJpc3MiOiJCQyIsInNpZCI6MTAwMjA0MDk0NSwic3ViIjoiYmNhcHAubGlua2VyZCIsInN1Yl90eXBlIjowLCJ0b2tlbl90eXBlIjoxfQ.PiIDNrGUPvomigiiCfy4Obt31x0ijMy_970Aa3T_QttlxH6mEbch8GfTh4976EqmhvJlPSyhzJdtD12YT5dsdQ',
         ...headers
       },
       body: JSON.stringify({
@@ -89,7 +105,7 @@ export async function shopifyFetch<T>({
       body
     };
   } catch (e) {
-    if (isShopifyError(e)) {
+    if (isBigCommerceError(e)) {
       throw {
         status: e.status || 500,
         message: e.message,
@@ -100,6 +116,61 @@ export async function shopifyFetch<T>({
     throw {
       error: e,
       query
+    };
+  }
+}
+
+export async function bigCommerceRestFetch<T>({
+  path,
+  method,
+  body,
+  headers,
+  cache = 'force-cache'
+}: {
+  path: string;
+  method: HTTPMethod;
+  body?: object;
+  headers?: HeadersInit;
+  cache?: RequestCache;
+}): Promise<{ status: number; body: T } | never> {
+  try {
+    const result = await fetch(`${restEndpoint}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Auth-Token': '***REMOVED***',
+        ...headers
+      },
+      body: body ? JSON.stringify(body) : null,
+      cache,
+      next: { revalidate: 900 } // 15 minutes
+    });
+
+    const returnedBody = await result.json();
+
+    console.log('returnedBody:');
+    console.dir(returnedBody);
+
+    if (returnedBody.errors) {
+      throw returnedBody.errors[0];
+    }
+
+    return {
+      status: result.status,
+      body: returnedBody
+    };
+  } catch (e) {
+    if (isBigCommerceError(e)) {
+      throw {
+        status: e.status || 500,
+        message: e.message,
+        path
+      };
+    }
+
+    throw {
+      error: e,
+      path
     };
   }
 }
@@ -149,21 +220,38 @@ const reshapeCollections = (collections: ShopifyCollection[]) => {
   return reshapedCollections;
 };
 
-const reshapeProduct = (product: ShopifyProduct, filterHiddenProducts: boolean = true) => {
-  if (!product || (filterHiddenProducts && product.tags.includes(HIDDEN_PRODUCT_TAG))) {
+const reshapeProduct = (product: Product) => {
+  if (!product) {
     return undefined;
   }
 
   const { images, variants, ...rest } = product;
 
+  const featuredImage = removeEdgesAndNodes(images).filter((image) => image.isDefault === true);
+
+  const priceRange = {
+    minVariantPrice: {
+      amount: product.prices?.priceRange?.min?.value,
+      currencyCode: product.prices?.priceRange?.min?.currencyCode
+    },
+    maxVariantPrice: {
+      amount: product.prices?.priceRange?.max?.value,
+      currencyCode: product.prices?.priceRange?.max?.currencyCode
+    }
+  };
+
   return {
     ...rest,
     images: removeEdgesAndNodes(images),
-    variants: removeEdgesAndNodes(variants)
+    variants: removeEdgesAndNodes(variants),
+    featuredImage: {
+      url: featuredImage.urlOriginal
+    },
+    priceRange
   };
 };
 
-const reshapeProducts = (products: ShopifyProduct[]) => {
+const reshapeProducts = (products: Product[]) => {
   const reshapedProducts = [];
 
   for (const product of products) {
@@ -180,10 +268,14 @@ const reshapeProducts = (products: ShopifyProduct[]) => {
 };
 
 export async function createCart(): Promise<Cart> {
-  const res = await shopifyFetch<ShopifyCreateCartOperation>({
-    query: createCartMutation,
+  // TODO: Shopify creates empty carts but BigCommerce doesn't. We need a product to create a cart. Figure this out later.
+  const res = await bigCommerceRestFetch<BigCommerceCreateCartOperation>({
+    method: HTTPMethod.POST,
+    path: '/api/storefront/cart',
     cache: 'no-store'
   });
+
+  console.log('cart', res);
 
   return reshapeCart(res.body.data.cartCreate.cart);
 }
@@ -192,7 +284,7 @@ export async function addToCart(
   cartId: string,
   lines: { merchandiseId: string; quantity: number }[]
 ): Promise<Cart> {
-  const res = await shopifyFetch<ShopifyAddToCartOperation>({
+  const res = await bigCommerceGraphQLFetch<ShopifyAddToCartOperation>({
     query: addToCartMutation,
     variables: {
       cartId,
@@ -204,7 +296,7 @@ export async function addToCart(
 }
 
 export async function removeFromCart(cartId: string, lineIds: string[]): Promise<Cart> {
-  const res = await shopifyFetch<ShopifyRemoveFromCartOperation>({
+  const res = await bigCommerceGraphQLFetch<ShopifyRemoveFromCartOperation>({
     query: removeFromCartMutation,
     variables: {
       cartId,
@@ -220,7 +312,7 @@ export async function updateCart(
   cartId: string,
   lines: { id: string; merchandiseId: string; quantity: number }[]
 ): Promise<Cart> {
-  const res = await shopifyFetch<ShopifyUpdateCartOperation>({
+  const res = await bigCommerceGraphQLFetch<ShopifyUpdateCartOperation>({
     query: editCartItemsMutation,
     variables: {
       cartId,
@@ -233,7 +325,7 @@ export async function updateCart(
 }
 
 export async function getCart(cartId: string): Promise<Cart | null> {
-  const res = await shopifyFetch<ShopifyCartOperation>({
+  const res = await bigCommerceGraphQLFetch<ShopifyCartOperation>({
     query: getCartQuery,
     variables: { cartId },
     cache: 'no-store'
@@ -247,7 +339,7 @@ export async function getCart(cartId: string): Promise<Cart | null> {
 }
 
 export async function getCollection(handle: string): Promise<Collection | undefined> {
-  const res = await shopifyFetch<ShopifyCollectionOperation>({
+  const res = await bigCommerceGraphQLFetch<ShopifyCollectionOperation>({
     query: getCollectionQuery,
     variables: {
       handle
@@ -257,24 +349,25 @@ export async function getCollection(handle: string): Promise<Collection | undefi
   return reshapeCollection(res.body.data.collection);
 }
 
-export async function getCollectionProducts(handle: string): Promise<Product[]> {
-  const res = await shopifyFetch<ShopifyCollectionProductsOperation>({
+export async function getCollectionProducts(
+  categoryId: number,
+  limit?: number
+): Promise<Product[]> {
+  const res = await bigCommerceGraphQLFetch<ShopifyCollectionProductsOperation>({
     query: getCollectionProductsQuery,
     variables: {
-      handle
+      categoryId,
+      first: limit
     }
   });
 
-  if (!res.body.data.collection) {
-    console.log('No collection found for handle', handle);
-    return [];
-  }
-
-  return reshapeProducts(removeEdgesAndNodes(res.body.data.collection.products));
+  return reshapeProducts(removeEdgesAndNodes(res.body.data.site?.category?.products));
 }
 
 export async function getCollections(): Promise<Collection[]> {
-  const res = await shopifyFetch<ShopifyCollectionsOperation>({ query: getCollectionsQuery });
+  const res = await bigCommerceGraphQLFetch<ShopifyCollectionsOperation>({
+    query: getCollectionsQuery
+  });
   const shopifyCollections = removeEdgesAndNodes(res.body?.data?.collections);
   const collections = [
     {
@@ -298,24 +391,23 @@ export async function getCollections(): Promise<Collection[]> {
   return collections;
 }
 
-export async function getMenu(handle: string): Promise<Menu[]> {
-  const res = await shopifyFetch<ShopifyMenuOperation>({
-    query: getMenuQuery,
-    variables: {
-      handle
-    }
+export async function getMenu(): Promise<Menu[]> {
+  const res = await bigCommerceGraphQLFetch<ShopifyMenuOperation>({
+    // TODO: change return type
+    query: getSiteInfoQuery
   });
 
   return (
-    res.body?.data?.menu?.items.map((item: { title: string; url: string }) => ({
-      title: item.title,
-      path: item.url.replace(domain, '').replace('/collections', '/search').replace('/pages', '')
+    res.body?.data?.site?.categoryTree.map((category: BCCategory) => ({
+      id: category.entityId,
+      title: category.name,
+      path: category.path
     })) || []
   );
 }
 
 export async function getPage(handle: string): Promise<Page> {
-  const res = await shopifyFetch<ShopifyPageOperation>({
+  const res = await bigCommerceGraphQLFetch<ShopifyPageOperation>({
     query: getPageQuery,
     variables: { handle }
   });
@@ -332,7 +424,7 @@ export async function getPages(): Promise<Page[]> {
 }
 
 export async function getProduct(handle: string): Promise<Product | undefined> {
-  const res = await shopifyFetch<ShopifyProductOperation>({
+  const res = await bigCommerceGraphQLFetch<ShopifyProductOperation>({
     query: getProductQuery,
     variables: {
       handle
@@ -343,7 +435,7 @@ export async function getProduct(handle: string): Promise<Product | undefined> {
 }
 
 export async function getProductRecommendations(productId: string): Promise<Product[]> {
-  const res = await shopifyFetch<ShopifyProductRecommendationsOperation>({
+  const res = await bigCommerceGraphQLFetch<ShopifyProductRecommendationsOperation>({
     query: getProductRecommendationsQuery,
     variables: {
       productId
@@ -362,7 +454,7 @@ export async function getProducts({
   reverse?: boolean;
   sortKey?: string;
 }): Promise<Product[]> {
-  const res = await shopifyFetch<ShopifyProductsOperation>({
+  const res = await bigCommerceGraphQLFetch<ShopifyProductsOperation>({
     query: getProductsQuery,
     variables: {
       query,

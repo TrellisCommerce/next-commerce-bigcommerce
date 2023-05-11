@@ -2,9 +2,8 @@ import CloseIcon from 'components/icons/close';
 import LoadingDots from 'components/loading-dots';
 import { useRouter } from 'next/navigation';
 import { startTransition, useState } from 'react';
-
 import clsx from 'clsx';
-import type { CartItem } from 'lib/shopify/types';
+import type { CartItem } from 'lib/bigcommerce/types';
 
 export default function DeleteItemButton({ item }: { item: CartItem }) {
   const router = useRouter();
