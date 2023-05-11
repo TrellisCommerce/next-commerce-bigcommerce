@@ -51,6 +51,7 @@ const domain = process.env.BIGCOMMERCE_STOREFRONT_DOMAIN!;
 const graphQLEndpoint = process.env.BIGCOMMERCE_STOREFRONT_GRAPHQL_API_URL;
 const restEndpoint = process.env.BIGCOMMERCE_STOREFRONT_REST_API_URL;
 const key = process.env.BIGCOMMERCE_STOREFRONT_API_TOKEN!;
+const restKey = process.env.BIGCOMMERCE_STORE_API_TOKEN!;
 
 type ExtractVariables<T> = T extends { variables: object } ? T['variables'] : never;
 
@@ -137,7 +138,7 @@ export async function bigCommerceRestFetch<T>({
       method,
       headers: {
         'Content-Type': 'application/json',
-        'X-Auth-Token': '***REMOVED***',
+        'X-Auth-Token': restKey,
         ...headers
       },
       body: body ? JSON.stringify(body) : null,
