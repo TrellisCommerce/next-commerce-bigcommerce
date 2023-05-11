@@ -82,8 +82,7 @@ export async function bigCommerceGraphQLFetch<T>({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization:
-          'Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJjaWQiOjEsImNvcnMiOlsiaHR0cHM6Ly9kZXZlbG9wZXIuYmlnY29tbWVyY2UuY29tIl0sImVhdCI6MTY4MzQ5OTE1NSwiaWF0IjoxNjgzMzI2MzU1LCJpc3MiOiJCQyIsInNpZCI6MTAwMjA0MDk0NSwic3ViIjoiYmNhcHAubGlua2VyZCIsInN1Yl90eXBlIjowLCJ0b2tlbl90eXBlIjoxfQ.PiIDNrGUPvomigiiCfy4Obt31x0ijMy_970Aa3T_QttlxH6mEbch8GfTh4976EqmhvJlPSyhzJdtD12YT5dsdQ',
+        Authorization: `Bearer ${key}`,
         ...headers
       },
       body: JSON.stringify({
